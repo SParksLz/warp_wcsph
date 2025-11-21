@@ -7,7 +7,7 @@ from wcsph_kernel import *
 class sph_material:
     def __init__(self, 
                 rho = 1000.0, # rest density
-                stiffness = 50000.0,
+                stiffness = 45000.0,
                 exponent = 7.0, 
                 mu=0.005,
                 tension=0.01) -> None:
@@ -40,15 +40,15 @@ class wcsph:
     def __init__(self) -> None:
         self.verbose = False
         self.sim_time = 0.0
-        self.sim_dt = 0.0005
-        self.particle_radius = 0.006
+        self.sim_dt = 0.0002
+        self.particle_radius = 0.005
         self.particle_distance = self.particle_radius * 2.0
         self.smoothing_length = self.particle_distance * 1.6
         # self.particle_distance = self.smoothing_length 
         self.bound_size = 1.2
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
         self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 15
+        self.sub_step_num = 30
         self.gravity = -10.0
 
 
@@ -194,7 +194,7 @@ if __name__ == "__main__" :
     print(wp.__version__)
 
 
-    for i in range(300) :
+    for i in range(1200) :
         test.render()
         test.step()
     test.renderer.save()
