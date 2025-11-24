@@ -73,8 +73,7 @@ def density_kernel(xyz: wp.vec3, smoothing_length: float, volume: float):
 @wp.kernel
 def rho(
         grid_id: wp.uint64,
-        rho_0: float,
-        volume: float, 
+        mass: float,
         smoothing_length: float,
         particle_rho: wp.array(dtype=float), 
         particle_x: wp.array(dtype=wp.vec3),
@@ -89,8 +88,7 @@ def rho(
     for index in neighbors :
         distance = x - particle_x[index]
         r_norm = wp.length(distance)
-        mass_nei = rho_0 * volume
-        rho_temp += mass_nei * get_cubic(r_norm, smoothing_length)
+        rho_temp += mass * get_cubic(r_norm, smoothing_length)
     particle_rho[i] = rho_temp
 
 

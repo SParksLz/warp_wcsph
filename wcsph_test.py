@@ -101,8 +101,7 @@ class wcsph:
                 dim=self.n,
                 inputs=[
                     self.sph_model.grid.id,
-                    self.sph_model.liquid_material.rho,
-                    self.p_volume,
+                    self.mass,
                     self.smoothing_length,
                     self.rho,
                     self.x,
