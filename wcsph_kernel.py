@@ -72,60 +72,47 @@ def density_kernel(xyz: wp.vec3, smoothing_length: float, volume: float):
 
 @wp.kernel
 def rho(
-        particle_rho: wp.array(dtype=float), 
-        exponent: wp.array(dtype=float),
-        stiffness: wp.array(dtype=float),
-        particle_x: wp.array(dtype=wp.vec3),
-        rest_density: wp.array(dtype=float),
+        grid_id: wp.uint64,
+        rho_0: float,
         volume: float, 
         smoothing_length: float,
-        grid_id: wp.uint64,
-        pressure: wp.array(dtype=float),
+        particle_rho: wp.array(dtype=float), 
+        particle_x: wp.array(dtype=wp.vec3),
     ) :
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid_id, tid)
     
-    # particle rho will multiply by rest_density at last because the origin term is mass
-    # particle_rho[i] = volume * get_cubic(0.0, smoothing_length) # wp.hash_grid_query will detect self
     x = particle_x[i]
-    rho_0 = rest_density[i]
-
 
     rho_temp = float(0.0)
     neighbors = wp.hash_grid_query(grid_id, x, smoothing_length)
     for index in neighbors :
-        rho_0_nei = rest_density[index]
         distance = x - particle_x[index]
         r_norm = wp.length(distance)
-        mass_nei = rho_0_nei * volume
+        mass_nei = rho_0 * volume
         rho_temp += mass_nei * get_cubic(r_norm, smoothing_length)
-        # rho_temp += density_kernel(distance, smoothing_length, volume)
-    # particle_rho[i] = rest_density * rho_temp
     particle_rho[i] = rho_temp
-    # particle_rho[i] += rho_temp
-    # particle_rho[i] *= rho_0
-    # particle_rho[i] = wp.max(particle_rho[i], rho_0)
-
-    exp = exponent[i]
-    stiff = stiffness[i]
 
 
-    # get pressure by the way 
-    pressure[i] = stiff * (wp.pow(particle_rho[i] / rho_0, exp) - 1.0)
-
-# @wp.func
-# def cal_pressure():
+@wp.kernel
+def pressure(
+    stiffness: float,
+    exp: float,
+    rho_0: float,
+    particle_rho: wp.array(dtype=float),
+    pressure: wp.array(dtype=float),
+):
+    tid = wp.tid()
+    pressure[tid] = stiffness * (wp.pow(particle_rho[tid] / rho_0, exp) - 1.0)
 
 
 @wp.func
 def cal_acc_with_non_pressure(
     a: wp.vec3,
-    # rho: float,
     rho_nei: float,
     vel: wp.vec3,
     vel_nei: wp.vec3,
     mass: float,
-    mass_nei: float,
     mu: float,
     gamma: float,
     d_current_nei: wp.vec3,
@@ -134,13 +121,13 @@ def cal_acc_with_non_pressure(
     smoothing_length: float,
     
 ):
-    a -= gamma / mass * mass_nei * d_current_nei * get_cubic(e_dist, smoothing_length)
+    a -= gamma / mass * mass * d_current_nei * get_cubic(e_dist, smoothing_length)
     v_current_nei = wp.dot((vel - vel_nei), d_current_nei)
     d = 2.0 * (3.0 + 2.0)
 
     f_v = (d 
         * mu
-        * (mass_nei / rho_nei) 
+        * (mass / rho_nei) 
         * v_current_nei 
         / (distance * distance + 0.01 * (smoothing_length * smoothing_length)) 
         * get_cubic_derivative(d_current_nei, smoothing_length)
@@ -156,7 +143,6 @@ def cal_acc_with_pressure(
     pressure: float,
     pressure_nei: float,
     rho_0: float,
-    rho_0_nei: float,
     rho: float,
     rho_nei: float,
     smoothing_length: float,
@@ -165,7 +151,7 @@ def cal_acc_with_pressure(
     # rho_nei = rho_nei * rho_0 / rho_0
     dp_nei = pressure_nei / (rho_nei * rho_nei)
     a += (
-        -rho_0_nei
+        -rho_0
         * volume
         * (dp_i + dp_nei)
         * get_cubic_derivative(d, smoothing_length)
@@ -175,41 +161,31 @@ def cal_acc_with_pressure(
 
 @wp.kernel
 def acceleration(
+    grid_id: wp.uint64,
+    rho_0: float,
+    gamma: float,
+    mu: float,
+    mass: float,
+    particle_size: float,
+    volume: float,
+    smoothing_length: float,
+    gravity: float,
     particle_x : wp.array(dtype=wp.vec3),
     particle_v : wp.array(dtype=wp.vec3),
-    particle_rho_0: wp.array(dtype=float),
     particle_rho : wp.array(dtype=float),
     particle_a : wp.array(dtype=wp.vec3),
-    particle_size: float,
-    particle_stiffness: wp.array(dtype=float),
-    particle_exponent: wp.array(dtype=float),
     particle_pressure: wp.array(dtype=float),
-    volume: float,
-    mass_: wp.array(dtype=float),
-    gamma_: wp.array(dtype=float),
-    mu_: wp.array(dtype=float),
-    gravity: float,
-    smoothing_length : float,
-    grid_id : wp.uint64,
 ) :
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid_id, tid)
     rho = particle_rho[i]
     x = particle_x[i]
     a = particle_a[i]
-    mass = mass_[i]
-    gamma = gamma_[i]
-    mu = mu_[i]
-
     # data from material
-    rho_0 = particle_rho_0[i]
     pressure = particle_pressure[i]
-    stiffness = particle_stiffness[i]
-    exponent = particle_exponent[i]
-
     acc = wp.vec3(0.0, 0.0, 0.0)
-
     neighbors = wp.hash_grid_query(grid_id, x, smoothing_length)
+
     for index in neighbors :
         if index != i :
             nei_x = particle_x[index]
@@ -218,25 +194,19 @@ def acceleration(
             distance = wp.length(dir_current_nei)
             e_dist = wp.max(distance, particle_size)
             rho_nei = particle_rho[index]
-            rho_0_nei = particle_rho_0[index]
-            nei_mass = mass_[index]
-            nei_gamma = gamma_[index]
             pressure_nei = particle_pressure[index]
-
             # non pressure acceleration
             acc = cal_acc_with_non_pressure(
                 acc, 
                 rho_nei, 
                 particle_v[i], particle_v[index],  # velocity of current and nei particles
-                mass_[i], mass_[index], # mass of current and nei particles
+                mass, # mass of current and nei particles
                 mu,
                 gamma,
                 dir_current_nei, 
                 e_dist, 
                 distance, 
                 smoothing_length)
-
-            # pressure = stiffness * (rho - rho_0) ** exponent
             
             # pressure acceleration
             acc = cal_acc_with_pressure(
@@ -244,7 +214,7 @@ def acceleration(
                 volume,
                 dir_current_nei, # position of current and nei particles
                 pressure, pressure_nei,# pressure of current and nei particles
-                rho_0, rho_0_nei, # rest density of current and nei particles
+                rho_0, # rest density of current and nei particles
                 rho, rho_nei, # density of current and nei particles
                 smoothing_length)
 
@@ -267,7 +237,9 @@ def drift(particle_x: wp.array(dtype=wp.vec3), particle_v: wp.array(dtype=wp.vec
 
 @wp.kernel
 def initialize_particles(
-    particle_x: wp.array(dtype=wp.vec3), particle_distance: float, width: float, height: float, length: float
+    particle_x: wp.array(dtype=wp.vec3), 
+    particle_distance: float, 
+    width: float, height: float, length: float
 ):
     tid = wp.tid()
 
@@ -293,8 +265,8 @@ def initialize_particles(
 @wp.kernel
 def get_neighbor(
     grid: wp.uint64,
-    pt_array: wp.array(dtype=wp.vec3),
     smoothing_length: float,
+    pt_array: wp.array(dtype=wp.vec3),
     nei_count: wp.array(dtype=wp.int32),
 ) :
     tid = wp.tid()
