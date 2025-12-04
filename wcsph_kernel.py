@@ -35,6 +35,14 @@ def get_cubic(r_norm : float, radius : float):
             # res = cube(res)
     return res
 
+# @wp.kernel
+# def get_v_max(
+#         particle_v : wp.array(dtype=wp.vec3),
+#         v_max : float,
+#     ):
+#     tid = wp.tid()
+#     wp.atomic_max(particle_v, 0, wp.length(particle_v[tid]))
+
 @wp.func
 def get_cubic_derivative(r: wp.vec3, smoothing_length: float):
     """
@@ -68,51 +76,6 @@ def density_kernel(xyz: wp.vec3, smoothing_length: float, volume: float):
 
 # @wp.func
 # def non_pressure(mass: float, gamma:) :
-
-@wp.kernel
-def compute_factor(
-        grid_id: wp.uint64,
-        x: wp.array(dtype=wp.vec3),
-        smoothing_length: float,
-        volume: float,
-        factor: wp.array(dtype=float),
-    ) :
-    tid = wp.tid()
-    i = wp.hash_grid_point_id(grid_id, tid)
-    current_x = x[i]
-
-    neighbors = wp.hash_grid_query(grid_id, current_x, smoothing_length)
-
-    grad_p_i = wp.vec3(0.0, 0.0, 0.0)
-    sum_grad_p_k = wp.float(0.0)
-    ret = wp.vec4(0.0, 0.0, 0.0, 0.0)  # 0-2 ：gradj 3: sum_grad_pressure_k 
-
-
-    for index in neighbors :
-        if index != i :
-            nei_x = x[index]
-            d = current_x - nei_x
-            
-            grad_j = -volume * get_cubic_derivative(d, smoothing_length)
-            ret.w += wp.length(grad_j) * wp.length(grad_j)
-            # ret.xyz -= grad_j
-            ret.x -= grad_j.x
-            ret.y -= grad_j.y
-            ret.z -= grad_j.z
-    sum_grad_p_k = ret.w
-    grad_p_i = wp.vec3(ret.x, ret.y, ret.z)
-
-    sum_grad_p_k += wp.length(grad_p_i) * wp.length(grad_p_i)
-
-    factor_temp = float(0.0)
-    if sum_grad_p_k > 1e-6:
-        factor_temp = -1.0 / sum_grad_p_k
-    else :
-        factor_temp = 0.0
-    factor[i] = factor_temp
-
-
-
 
 @wp.kernel
 def rho(
@@ -192,6 +155,8 @@ def cal_acc_with_non_pressure(
     a += f_v
 
     return a
+
+
 @wp.func
 def cal_acc_with_pressure(
     a: wp.vec3,
@@ -311,7 +276,7 @@ def drift(particle_x: wp.array(dtype=wp.vec3), particle_v: wp.array(dtype=wp.vec
 
 @wp.kernel
 def initialize_particles(
-    particle_x: wp.array(dtype=wp.vec3), particle_distance: float, width: float, height: float, length: float
+    particle_x: wp.array(dtype=wp.vec3), particle_distance: float, width: float, height: float, length: float, offset: wp.vec3
 ):
     tid = wp.tid()
 
@@ -325,7 +290,7 @@ def initialize_particles(
     z = wp.float(tid % nr_z)
     y = wp.float((tid // nr_z) % nr_y)
     x = wp.float((tid // (nr_z * nr_y)) % nr_x)
-    pos = particle_distance * wp.vec3(x, y, z)
+    pos = particle_distance * wp.vec3(x, y, z) + offset
 
     # add small jitter
     state = wp.rand_init(123, tid)
@@ -397,3 +362,58 @@ def apply_bounds(
     # apply clamps
     particle_x[tid] = x
     particle_v[tid] = v
+
+
+# for dfsph
+@wp.kernel
+def compute_factor(
+        grid_id: wp.uint64,
+        x: wp.array(dtype=wp.vec3),
+        smoothing_length: float,
+        volume: float,
+        factor: wp.array(dtype=float),
+    ) :
+    tid = wp.tid()
+    i = wp.hash_grid_point_id(grid_id, tid)
+    current_x = x[i]
+
+    neighbors = wp.hash_grid_query(grid_id, current_x, smoothing_length)
+
+    grad_p_i = wp.vec3(0.0, 0.0, 0.0)
+    sum_grad_p_k = wp.float(0.0)
+    ret = wp.vec4(0.0, 0.0, 0.0, 0.0)  # 0-2 ：gradj 3: sum_grad_pressure_k 
+
+
+    for index in neighbors :
+        if index != i :
+            nei_x = x[index]
+            d = current_x - nei_x
+            
+            grad_j = -volume * get_cubic_derivative(d, smoothing_length)
+            ret.w += wp.length(grad_j) * wp.length(grad_j)
+            # ret.xyz -= grad_j
+            ret.x -= grad_j.x
+            ret.y -= grad_j.y
+            ret.z -= grad_j.z
+    sum_grad_p_k = ret.w
+    grad_p_i = wp.vec3(ret.x, ret.y, ret.z)
+
+    sum_grad_p_k += wp.length(grad_p_i) * wp.length(grad_p_i)
+
+    factor_temp = float(0.0)
+    if sum_grad_p_k > 1e-6:
+        factor_temp = -1.0 / sum_grad_p_k
+    else :
+        factor_temp = 0.0
+    factor[i] = factor_temp
+
+
+
+#utils
+@wp.kernel
+def scale_position(
+    particle_x: wp.array(dtype=wp.vec3),
+    scale: float,
+) :
+    tid = wp.tid()
+    particle_x[tid] *= scale

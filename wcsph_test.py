@@ -3,6 +3,8 @@ import warp as wp
 import warp.render
 import json
 from wcsph_kernel import *
+import math
+from pxr import Usd, UsdGeom, Vt, Sdf
 
 class sph_material:
     def __init__(self, 
@@ -37,27 +39,37 @@ class sph_model :
         # self.grid.build(particle_q, self.smoothing_length)
 
 class wcsph:
-    def __init__(self) -> None:
+    def __init__(self, load_from_usd=False) -> None:
         self.verbose = False
         self.sim_time = 0.0
-        self.sim_dt = 0.0005
-        self.particle_radius = 0.006
+        self.sim_dt = 0.001
+        
+
+        self.particle_radius = 0.06
+
         self.particle_distance = self.particle_radius * 2.0
-        self.smoothing_length = self.particle_distance * 1.6
+        self.smoothing_length = self.particle_distance * 1.35
         # self.particle_distance = self.smoothing_length 
-        self.bound_size = 1.2
+        self.bound_size = 2.5
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
         self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 15
+        self.sub_step_num = 17
         self.gravity = -10.0
 
+        self.camera_pos = (0.0, 2.5, 3.5)
 
-        self.n = int(
-            self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
-        )  # number particles (small box in corner)
+        self.load_from_usd = load_from_usd
+
+
+        if self.load_from_usd:
+            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd")
+        else:
+            self.n = int(
+                self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
+            )  # number particles (small box in corner)
+            self.x = wp.empty(self.n, dtype=wp.vec3)
+
         print(f"particle count : {self.n}")
-
-        self.x = wp.empty(self.n, dtype=wp.vec3)
         self.mass = wp.full(self.n, self.p_volume * self.sph_model.liquid_material.rho)
         self.gamma = wp.full(self.n, self.sph_model.liquid_material.tension)
         self.stiffness = wp.full(self.n, self.sph_model.liquid_material.stiffness)
@@ -76,26 +88,61 @@ class wcsph:
         self.factor = wp.zeros(self.n, dtype=float)
 
         # set random positions
-        wp.launch(
-            kernel=initialize_particles,
-            dim=self.n,
-            inputs=[self.x, self.smoothing_length, self.bound_size, self.bound_size, self.bound_size],
-        )  # initialize in small area
+        # wp.launch(
+        #     kernel=initialize_particles,
+        #     dim=self.n,
+        #     inputs=[
+        #         self.x, 
+        #         self.smoothing_length, 
+        #         self.bound_size, 
+        #         self.bound_size, 
+        #         self.bound_size,
+        #         wp.vec3(-self.bound_size * 0.5, -self.bound_size * 0.5, 0.0),
+        #     ],
+        # )  # initialize in small area
 
         # self.save_particle_to_json()
 
         self.sph_model.build_hash_grid()
 
-        # self.renderer = wp.render.OpenGLRenderer(up_axis="Z")
-        self.renderer = wp.render.UsdRenderer(up_axis="Z", stage="wcsph_test.usd")
+        self.renderer = wp.render.OpenGLRenderer(
+            up_axis="Z",
+            camera_pos=self.camera_pos,
+            near_plane=0.001,
+            draw_axis=False,
+            # camera_up=(0.0, 0.0, 1.0),
+            # camera_front=(0.0, 1.0, 0.0),
+        )
+        # self.renderer = wp.render.UsdRenderer(up_axis="Z", stage="wcsph_test.usd")
 
-        self.preparation()
+        # self.preparation()
+    def compute_sim_dt(
+            self,
+            dt_min, 
+            dt_max, 
+        ) :
+
+        eps = 1e-12
+        a_max = max(np.linalg.norm(a_i) for a_i in self.a.numpy())
+
+        c_s= math.sqrt((self.sph_model.liquid_material.stiffness / self.sph_model.liquid_material.rho))
+
+        dt_force = 0.25 * self.smoothing_length / (a_max + eps)
+        dt_sound = 0.4 * self.smoothing_length / (c_s * 1.05 + eps)
+        dt = min(dt_force, dt_sound)
+        dt = max(dt_min, min(dt_max, dt))
+        dt = min(dt, self.sim_dt * 1.1)
+        self.sim_dt = dt
+        print(self.sim_dt)
+
+
 
 
     
 
     def sub_step(self) :
-        with wp.ScopedTimer("grid build", active=True):
+        # self.compute_sim_dt(self.sim_dt * 0.9, self.sim_dt * 1.1)
+        with wp.ScopedTimer("grid build", active=False):
                     # build grid
             self.sph_model.grid.build(self.x, self.smoothing_length)
             wp.launch(
@@ -154,7 +201,7 @@ class wcsph:
         # # drift
         wp.launch(kernel=drift, dim=self.n, inputs=[self.x, self.v, self.sim_dt])
         # # ground collision
-        wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,1.2 ,-0.1])
+        wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,self.bound_size * 0.5 ,-0.1])
 
     def preparation(self) :
         with wp.ScopedTimer("preparation", active=True):
@@ -199,33 +246,33 @@ class wcsph:
                     self.factor,
                 ]
             )
-        print("----rho-----")
-        print(self.rho)
-        print("-----factor-----")
-        print(self.factor)
-        print("----nei_count----")
-        print(self.nei_count)
+        # print("----rho-----")
+        # print(self.rho)
+        # print("-----factor-----")
+        # print(self.factor)
+        # print("----nei_count----")
+        # print(self.nei_count)
 
 
 
     def step(self) :
-        pass
+        # pass
         # neighbors = wp.hash_grid_query(self.grid, x, self.smoothing_length)
-        # with wp.ScopedTimer("step"):
-        #     for _ in range(self.sub_step_num):
-        #         with wp.ScopedTimer("sub_step"):
-        #             self.sub_step()
-        #             self.sim_time += self.sim_dt
+        with wp.ScopedTimer("step", active=True):
+            for _ in range(self.sub_step_num):
+                with wp.ScopedTimer("sub_step", active=False):
+                    self.sub_step()
+                    self.sim_time += self.sim_dt
 
     def render(self):
-        pass
         # if self.renderer is None:
         #     return
 
-        with wp.ScopedTimer("render"):
+        with wp.ScopedTimer("render", active=False):
             self.renderer.begin_frame(self.sim_time)
+            print(self.x)
             self.renderer.render_points(
-                points=self.x.numpy(), radius=self.smoothing_length *0.5, name="points", colors=(0.2, 0.3, 0.7)
+                points=self.x.numpy(), radius=0.03, name="points", colors=(0.2, 0.3, 0.7)
             )
             self.renderer.end_frame()
 
@@ -244,15 +291,27 @@ class wcsph:
             json.dump(particles_data, f, indent=2)
         
         print(f"粒子数据已保存到 {filename}，共 {self.n} 个粒子")
+    def load_particles_from_usd(self, filename):
+        stage = Usd.Stage.Open(filename)
+        fluid = stage.GetPrimAtPath("/ParticleTest/Fluid")
+        if fluid:
+            points = UsdGeom.Points(fluid)
+            positions = points.GetPointsAttr().Get()
+            self.x = wp.array(positions, dtype=wp.vec3)
+            self.n = len(positions)
+            wp.launch(kernel=scale_position, dim=self.n, inputs=[self.x, 100.0])
+            print(f"粒子数据已加载到 {filename}，共 {self.n} 个粒子")
+
+
 if __name__ == "__main__" :
-    test = wcsph()
+    test = wcsph(True)
     pt_array = test.x
     pt_nei_count = test.nei_count
-    print(pt_nei_count)
-    print(wp.__version__)
+    # print(pt_nei_count)
+    # print(wp.__version__)
 
 
-    for i in range(300) :
+    for i in range(5) :
         test.render()
         test.step()
     test.renderer.save()
