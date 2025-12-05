@@ -41,35 +41,15 @@ class sph_model :
 class wcsph:
     def __init__(self, load_from_usd=False) -> None:
         self.verbose = False
+        self.load_from_usd = load_from_usd
         self.sim_time = 0.0
-        self.sim_dt = 0.00025
+        self.sim_dt = 0.0002
         
 
-        self.particle_radius = 0.037
-
-
-        self.particle_distance = self.particle_radius * 2.0
-        self.smoothing_length = self.particle_distance * 1.35
-        # self.particle_distance = self.smoothing_length 
-        self.bound_size = 10
-        self.sph_model = sph_model(self.bound_size, self.smoothing_length)
-
-        # fluid material
-        self.sph_model.liquid_material.tension = 0.01
-        self.sph_model.liquid_material.stiffness = 50000.0
-        self.sph_model.liquid_material.mu = 0.05
-
-        self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 68
-        self.gravity = -10.0
-
-        # self.camera_pos = (0.0, 8.5, 10.5)
-        self.camera_pos = (0.0, 0.0, 0.175)
-
-        self.load_from_usd = load_from_usd
-
+        # self.particle_radius = 0.0125
+        self.particle_radius : float = 0.0
+        self.bound_size = 15.0
         self.collider: wp.Mesh = None
-
 
         if self.load_from_usd:
             self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd", wp.vec3(0.0, 0.0, 0.0))
@@ -78,6 +58,26 @@ class wcsph:
                 self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
             )  # number particles (small box in corner)
             self.x = wp.empty(self.n, dtype=wp.vec3)
+
+
+        self.particle_distance = self.particle_radius * 2.0
+        self.smoothing_length = self.particle_distance * 1.35
+        # self.particle_distance = self.smoothing_length 
+        self.sph_model = sph_model(self.bound_size, self.smoothing_length)
+
+        # fluid material
+        self.sph_model.liquid_material.tension = 0.01
+        self.sph_model.liquid_material.stiffness = 50000.0
+        self.sph_model.liquid_material.mu = 0.05
+
+        self.p_volume = 0.8 * (self.particle_distance ** 3)
+        self.sub_step_num = 32
+        self.gravity = -10.0
+
+        self.camera_pos = (0.0, 8.5, 10.5)
+        # self.camera_pos = (0.0, 0.0, 0.175)
+
+
 
         print(f"particle count : {self.n}")
         self.mass = wp.full(self.n, self.p_volume * self.sph_model.liquid_material.rho)
@@ -227,7 +227,7 @@ class wcsph:
         wp.launch(
             kernel=to_real_world,
             dim=self.n,
-            inputs=[self.x, self.render_x, 0.01, wp.vec3(0.0, 0.0, 7.5)])
+            inputs=[self.x, self.render_x, 0.01, wp.vec3(0.0, 0.0, 0.0)])
 
     def preparation(self) :
         with wp.ScopedTimer("preparation", active=True):
@@ -297,8 +297,11 @@ class wcsph:
             self.renderer.begin_frame(self.sim_time)
             # print(self.x)
             print(self.render_x)
+            # self.renderer.render_points(
+            #     points=self.render_x.numpy(), radius=0.0003, name="points", colors=(0.2, 0.3, 0.7)
+            # )
             self.renderer.render_points(
-                points=self.render_x.numpy(), radius=0.0003, name="points", colors=(0.2, 0.3, 0.7)
+                points=self.x.numpy(), radius=self.particle_radius, name="points", colors=(0.2, 0.3, 0.7)
             )
             # self.renderer.render_mesh(
             #     name = "container",
@@ -328,6 +331,7 @@ class wcsph:
         if fluid.IsValid():
             points = UsdGeom.Points(fluid)
             points_np = np.array(points.GetPointsAttr().Get())
+            self.particle_radius = points.GetWidthsAttr().Get()[0] * 0.5 * 100.0
             self.x = wp.array(points_np, dtype=wp.vec3)
             self.n = len(points_np)
             wp.launch(
@@ -360,7 +364,7 @@ if __name__ == "__main__" :
     # print(wp.__version__)
 
 
-    for i in range(1200) :
+    for i in range(300) :
         with wp.ScopedTimer("frame", active=True):
             test.render()
             test.step()
