@@ -53,12 +53,18 @@ class wcsph:
         # self.particle_distance = self.smoothing_length 
         self.bound_size = 10
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
+
+        # fluid material
+        self.sph_model.liquid_material.tension = 0.1
+        self.sph_model.liquid_material.stiffness = 50000.0
+        self.sph_model.liquid_material.mu = 0.05
+
         self.p_volume = 0.8 * (self.particle_distance ** 3)
         self.sub_step_num = 68
         self.gravity = -10.0
 
         # self.camera_pos = (0.0, 8.5, 10.5)
-        self.camera_pos = (0.0, 0.0, 0.25)
+        self.camera_pos = (0.0, 0.0, 0.175)
 
         self.load_from_usd = load_from_usd
 
