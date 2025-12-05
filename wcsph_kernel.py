@@ -322,7 +322,7 @@ def get_neighbor(
 def apply_bounds(
     particle_x: wp.array(dtype=wp.vec3),
     particle_v: wp.array(dtype=wp.vec3),
-    size: float,
+    size: wp.vec3,
     damping_coef: float,
 ):
     tid = wp.tid()
@@ -332,21 +332,21 @@ def apply_bounds(
     v = particle_v[tid]
 
 
-    if x[0] < -size:
-        x = wp.vec3(-size, x[1], x[2])
+    if x[0] < -size.x:
+        x = wp.vec3(-size.x, x[1], x[2])
         v = wp.vec3(v[0] * damping_coef, v[1], v[2])
 
     # clamp x right
-    if x[0] > size:
-        x = wp.vec3(size, x[1], x[2])
+    if x[0] > size.x:
+        x = wp.vec3(size.x, x[1], x[2])
         v = wp.vec3(v[0] * damping_coef, v[1], v[2])
-    if x[1] > size :
-        x = wp.vec3(x[0], size, x[2])
-        v = wp.vec3(v[0], v[1] *damping_coef, v[2])
 
+    if x[1] > size.y :
+        x = wp.vec3(x[0], size.y, x[2])
+        v = wp.vec3(v[0], v[1] *damping_coef, v[2])
     # clamp y bot
-    if x[1] < -size:
-        x = wp.vec3(x[0], -size, x[2])
+    if x[1] < -size.y:
+        x = wp.vec3(x[0], -size.y, x[2])
         v = wp.vec3(v[0], v[1] * damping_coef, v[2])
 
     # clamp z left
@@ -355,8 +355,8 @@ def apply_bounds(
         v = wp.vec3(v[0], v[1], v[2] * damping_coef)
 
     # clamp z right
-    if x[2] > size * 2.0:
-        x = wp.vec3(x[0], x[1], size)
+    if x[2] > size.z * 2.0:
+        x = wp.vec3(x[0], x[1], size.z * 2.0)
         v = wp.vec3(v[0], v[1], v[2] * damping_coef)
 
     # apply clamps

@@ -5,6 +5,7 @@ import json
 from wcsph_kernel import *
 import math
 from pxr import Usd, UsdGeom, Vt, Sdf
+from pathlib import Path
 
 class sph_material:
     def __init__(self, 
@@ -48,11 +49,14 @@ class wcsph:
 
         # self.particle_radius = 0.0125
         self.particle_radius : float = 0.0
-        self.bound_size = 15.0
+        self.bound_size = 100.0
+        self.bound_3d_size = wp.vec3(self.bound_size , self.bound_size * 0.5, self.bound_size)
         self.collider: wp.Mesh = None
 
         if self.load_from_usd:
-            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd", wp.vec3(0.0, 0.0, 0.0))
+            current_dir = Path(__file__).parent
+            # self.load_particles_from_usd("./temp/particle_test.usd", wp.vec3(0.0, 0.0, 0.0))
+            self.load_particles_from_usd((current_dir / "temp" / "fluid_particles.usd").as_posix(), wp.vec3(0.0, 0.0, 0.0))
         else:
             self.n = int(
                 self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
@@ -66,15 +70,15 @@ class wcsph:
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
 
         # fluid material
-        self.sph_model.liquid_material.tension = 0.01
+        self.sph_model.liquid_material.tension = 50.0
         self.sph_model.liquid_material.stiffness = 50000.0
-        self.sph_model.liquid_material.mu = 0.05
+        self.sph_model.liquid_material.mu = 1.5
 
         self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 32
+        self.sub_step_num = 84
         self.gravity = -10.0
 
-        self.camera_pos = (0.0, 8.5, 10.5)
+        self.camera_pos = (0.0, 8.5, 5.0)
         # self.camera_pos = (0.0, 0.0, 0.175)
 
 
@@ -117,15 +121,19 @@ class wcsph:
 
         self.sph_model.build_hash_grid()
 
-        self.renderer = wp.render.OpenGLRenderer(
-            up_axis="Z",
-            camera_pos=self.camera_pos,
-            near_plane=0.001,
-            draw_axis=False,
-            # camera_up=(0.0, 0.0, 1.0),
-            # camera_front=(0.0, 1.0, 0.0),
+        # self.renderer = wp.render.OpenGLRenderer(
+        #     up_axis="Z",
+        #     camera_pos=self.camera_pos,
+        #     near_plane=0.001,
+        #     far_plane = 1000.0,
+        #     draw_axis=False,
+        #     # camera_up=(0.0, 0.0, 1.0),
+        #     # camera_front=(0.0, 1.0, 0.0),
+        # )
+        self.renderer = wp.render.UsdRenderer(
+            up_axis="Z", 
+            stage="wcsph_test.usd",
         )
-        # self.renderer = wp.render.UsdRenderer(up_axis="Z", stage="wcsph_test.usd")
 
         # self.preparation()
     def compute_sim_dt(
@@ -213,17 +221,17 @@ class wcsph:
         # # drift
         wp.launch(kernel=drift, dim=self.n, inputs=[self.x, self.v, self.sim_dt])
         # # ground collision
-        wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,self.bound_size * 0.5 ,-0.1])
-        wp.launch(
-            kernel=update_collider_with_tri_mesh, 
-            dim=self.n, 
-            inputs=[
-                self.x, 
-                self.v, 
-                self.collider.id, 
-                self.particle_radius, 
-                0.9, 0.1],
-        )
+        wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,self.bound_3d_size ,-0.1])
+        # wp.launch(
+        #     kernel=update_collider_with_tri_mesh, 
+        #     dim=self.n, 
+        #     inputs=[
+        #         self.x, 
+        #         self.v, 
+        #         self.collider.id, 
+        #         self.particle_radius, 
+        #         0.9, 0.1],
+        # )
         wp.launch(
             kernel=to_real_world,
             dim=self.n,
@@ -287,6 +295,7 @@ class wcsph:
             for _ in range(self.sub_step_num):
                 with wp.ScopedTimer("sub_step", active=False):
                     self.sub_step()
+                    # print(self.render_x)
                     self.sim_time += self.sim_dt
 
     def render(self):
@@ -294,14 +303,25 @@ class wcsph:
         #     return
 
         with wp.ScopedTimer("render", active=False):
+            # 在渲染之前更新 render_x，确保使用最新的位置
+            wp.launch(
+                kernel=to_real_world,
+                dim=self.n,
+                inputs=[self.x, self.render_x, 0.01, wp.vec3(0.0, 0.0, 0.0)])
+            
             self.renderer.begin_frame(self.sim_time)
-            # print(self.x)
-            print(self.render_x)
+            # print("self.x (前几个值):", self.x.numpy()[:5])
+            # print("self.render_x (前几个值):", self.render_x.numpy()[:5])
             # self.renderer.render_points(
             #     points=self.render_x.numpy(), radius=0.0003, name="points", colors=(0.2, 0.3, 0.7)
             # )
+            # breakpoint()
+            
             self.renderer.render_points(
-                points=self.x.numpy(), radius=self.particle_radius, name="points", colors=(0.2, 0.3, 0.7)
+                points=self.render_x.numpy(), 
+                radius=self.particle_radius * 0.01, 
+                name="points", 
+                colors=(0.2, 0.3, 0.7)
             )
             # self.renderer.render_mesh(
             #     name = "container",
@@ -327,7 +347,7 @@ class wcsph:
         print(f"粒子数据已保存到 {filename}，共 {self.n} 个粒子")
     def load_particles_from_usd(self, filename, offset: wp.vec3):
         stage = Usd.Stage.Open(filename)
-        fluid = stage.GetPrimAtPath("/ParticleTest/Fluid")
+        fluid = stage.GetPrimAtPath("/Fluid/Particles")
         if fluid.IsValid():
             points = UsdGeom.Points(fluid)
             points_np = np.array(points.GetPointsAttr().Get())
@@ -364,7 +384,7 @@ if __name__ == "__main__" :
     # print(wp.__version__)
 
 
-    for i in range(300) :
+    for i in range(6000) :
         with wp.ScopedTimer("frame", active=True):
             test.render()
             test.step()
