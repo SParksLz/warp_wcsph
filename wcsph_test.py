@@ -42,27 +42,31 @@ class wcsph:
     def __init__(self, load_from_usd=False) -> None:
         self.verbose = False
         self.sim_time = 0.0
-        self.sim_dt = 0.001
+        self.sim_dt = 0.00025
         
 
-        self.particle_radius = 0.06
+        self.particle_radius = 0.037
+
 
         self.particle_distance = self.particle_radius * 2.0
         self.smoothing_length = self.particle_distance * 1.35
         # self.particle_distance = self.smoothing_length 
-        self.bound_size = 2.5
+        self.bound_size = 10
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
         self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 17
+        self.sub_step_num = 68
         self.gravity = -10.0
 
-        self.camera_pos = (0.0, 2.5, 3.5)
+        # self.camera_pos = (0.0, 8.5, 10.5)
+        self.camera_pos = (0.0, 0.0, 0.25)
 
         self.load_from_usd = load_from_usd
 
+        self.collider: wp.Mesh = None
+
 
         if self.load_from_usd:
-            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd")
+            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd", wp.vec3(0.0, 0.0, 7.5))
         else:
             self.n = int(
                 self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
@@ -86,6 +90,8 @@ class wcsph:
         self.nei_count = wp.zeros(self.n, dtype=wp.int32)
         self.pressure = wp.zeros(self.n, dtype=float)
         self.factor = wp.zeros(self.n, dtype=float)
+
+        self.render_x = wp.empty(self.n, dtype=wp.vec3)
 
         # set random positions
         # wp.launch(
@@ -202,6 +208,20 @@ class wcsph:
         wp.launch(kernel=drift, dim=self.n, inputs=[self.x, self.v, self.sim_dt])
         # # ground collision
         wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,self.bound_size * 0.5 ,-0.1])
+        wp.launch(
+            kernel=update_collider_with_tri_mesh, 
+            dim=self.n, 
+            inputs=[
+                self.x, 
+                self.v, 
+                self.collider.id, 
+                self.particle_radius, 
+                0.9, 0.1],
+        )
+        wp.launch(
+            kernel=to_real_world,
+            dim=self.n,
+            inputs=[self.x, self.render_x, 0.01, wp.vec3(0.0, 0.0, 7.5)])
 
     def preparation(self) :
         with wp.ScopedTimer("preparation", active=True):
@@ -257,7 +277,6 @@ class wcsph:
 
     def step(self) :
         # pass
-        # neighbors = wp.hash_grid_query(self.grid, x, self.smoothing_length)
         with wp.ScopedTimer("step", active=True):
             for _ in range(self.sub_step_num):
                 with wp.ScopedTimer("sub_step", active=False):
@@ -270,10 +289,16 @@ class wcsph:
 
         with wp.ScopedTimer("render", active=False):
             self.renderer.begin_frame(self.sim_time)
-            print(self.x)
+            # print(self.x)
+            print(self.render_x)
             self.renderer.render_points(
-                points=self.x.numpy(), radius=0.03, name="points", colors=(0.2, 0.3, 0.7)
+                points=self.render_x.numpy(), radius=0.0003, name="points", colors=(0.2, 0.3, 0.7)
             )
+            # self.renderer.render_mesh(
+            #     name = "container",
+            #     points=self.collider.points.numpy(),
+            #     indices=self.collider.indices.numpy(),
+            # )
             self.renderer.end_frame()
 
     def save_particle_to_json(self, filename="particles.json"):
@@ -291,16 +316,34 @@ class wcsph:
             json.dump(particles_data, f, indent=2)
         
         print(f"粒子数据已保存到 {filename}，共 {self.n} 个粒子")
-    def load_particles_from_usd(self, filename):
+    def load_particles_from_usd(self, filename, offset: wp.vec3):
         stage = Usd.Stage.Open(filename)
         fluid = stage.GetPrimAtPath("/ParticleTest/Fluid")
-        if fluid:
+        if fluid.IsValid():
             points = UsdGeom.Points(fluid)
-            positions = points.GetPointsAttr().Get()
-            self.x = wp.array(positions, dtype=wp.vec3)
-            self.n = len(positions)
-            wp.launch(kernel=scale_position, dim=self.n, inputs=[self.x, 100.0])
+            points_np = np.array(points.GetPointsAttr().Get())
+            self.x = wp.array(points_np, dtype=wp.vec3)
+            self.n = len(points_np)
+            wp.launch(
+                kernel=to_micro_world, 
+                dim=self.n, 
+                inputs=[self.x, 100.0, offset])
             print(f"粒子数据已加载到 {filename}，共 {self.n} 个粒子")
+        container = stage.GetPrimAtPath("/ParticleTest/Container")
+        if container.IsValid() :
+            mesh = UsdGeom.Mesh(container)
+            np_vtx = np.array(mesh.GetPointsAttr().Get())
+            vtx = wp.array(np_vtx, dtype=wp.vec3)
+            wp.launch(
+                kernel=to_micro_world, 
+                dim=len(np_vtx), 
+                inputs=[vtx, 100.0, offset])
+            idx = wp.array(np.array(mesh.GetFaceVertexIndicesAttr().Get()))
+
+            self.collider = wp.Mesh(vtx, idx)
+            print(self.collider.points)
+            
+
 
 
 if __name__ == "__main__" :
@@ -311,8 +354,9 @@ if __name__ == "__main__" :
     # print(wp.__version__)
 
 
-    for i in range(5) :
-        test.render()
-        test.step()
+    for i in range(900) :
+        with wp.ScopedTimer("frame", active=True):
+            test.render()
+            test.step()
     test.renderer.save()
     # print(pt_array)

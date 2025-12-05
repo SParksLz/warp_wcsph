@@ -410,10 +410,96 @@ def compute_factor(
 
 
 #utils
-@wp.kernel
+@wp.func
 def scale_position(
-    particle_x: wp.array(dtype=wp.vec3),
+    particle_x: wp.vec3,
     scale: float,
+    offset: wp.vec3,
 ) :
+    z_temp = float(0.0)
+    x = particle_x
+    z_temp = x.z
+    x.z = x.y
+    x.y = z_temp
+    x.x *= -1.0
+    x *= scale
+    x += offset
+
+    particle_x = x
+    return particle_x
+
+@wp.kernel
+def to_micro_world(
+    position: wp.array(dtype=wp.vec3),
+    scale: float,
+    offset: wp.vec3,
+):
     tid = wp.tid()
-    particle_x[tid] *= scale
+    # current_position = wp.vec3(0.0, 0.0, 0.0)
+    current_position = position[tid]
+    new_position = scale_position(current_position, scale, offset)
+    position[tid] = new_position
+@wp.kernel
+def to_real_world(
+    micro_position: wp.array(dtype=wp.vec3),
+    real_position : wp.array(dtype=wp.vec3),
+    scale: float,
+    offset: wp.vec3,
+):
+    tid = wp.tid()
+    micro_x = micro_position[tid]
+    micro_x -= offset
+    micro_x *= scale
+    real_position[tid] = micro_x
+
+
+
+
+
+# collision
+
+@wp.kernel(enable_backward=False)
+def update_collider_with_tri_mesh(
+    x: wp.array(dtype=wp.vec3),
+    v: wp.array(dtype=wp.vec3),
+    # cd: wp.array(dtype=int),
+    # mesh_transform: wp.mat44,
+    mesh_id: wp.uint64,
+    radius: float,
+    restitution: float,
+    friction: float,
+):
+    tid = wp.tid()
+    particle_pos = x[tid]
+    particle_vel = v[tid]
+
+    face_index = int(0)
+    face_u = float(0.0)
+    face_v = float(0.0)
+    sign = float(0.0)
+
+
+    # 查询 mesh
+    res = wp.mesh_query_point_sign_normal(mesh_id, particle_pos, radius, sign, face_index, face_u, face_v)
+    # q = wp.mesh_query_point(mesh_id, p, radius)
+    if res:
+        # cd[tid] = 1
+
+        mesh_pos = wp.mesh_eval_position(mesh_id, face_index, face_u, face_v)
+        # mesh_normal = wp.mesh_eval_face_normal(mesh_id, face_index, )
+        # mesh_vel = wp.mesh_eval_velocity(mesh_id, face_index, face_u, face_v)
+
+        delta = particle_pos - mesh_pos
+        n = wp.normalize(delta) * sign
+        v_length = wp.length(particle_vel)
+        particle_vel = (particle_vel - n * v_length) * restitution
+
+        # rel_vel = particle_vel - mesh_vel
+
+        # vn = wp.dot(rel_vel, n)
+        # vt = rel_vel - n * vn
+
+        
+
+    x[tid] = particle_pos
+    v[tid] = particle_vel
