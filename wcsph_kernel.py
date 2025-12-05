@@ -418,10 +418,10 @@ def scale_position(
 ) :
     z_temp = float(0.0)
     x = particle_x
-    z_temp = x.z
-    x.z = x.y
-    x.y = z_temp
-    x.x *= -1.0
+    # z_temp = x.z
+    # x.z = x.y
+    # x.y = z_temp
+    # x.x *= -1.0
     x *= scale
     x += offset
 

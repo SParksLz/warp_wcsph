@@ -55,7 +55,7 @@ class wcsph:
         self.sph_model = sph_model(self.bound_size, self.smoothing_length)
 
         # fluid material
-        self.sph_model.liquid_material.tension = 0.1
+        self.sph_model.liquid_material.tension = 0.01
         self.sph_model.liquid_material.stiffness = 50000.0
         self.sph_model.liquid_material.mu = 0.05
 
@@ -72,7 +72,7 @@ class wcsph:
 
 
         if self.load_from_usd:
-            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd", wp.vec3(0.0, 0.0, 7.5))
+            self.load_particles_from_usd("C:/Users/legen/Desktop/fluid_particle_test/particle_test.usd", wp.vec3(0.0, 0.0, 0.0))
         else:
             self.n = int(
                 self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
@@ -360,7 +360,7 @@ if __name__ == "__main__" :
     # print(wp.__version__)
 
 
-    for i in range(900) :
+    for i in range(1200) :
         with wp.ScopedTimer("frame", active=True):
             test.render()
             test.step()
