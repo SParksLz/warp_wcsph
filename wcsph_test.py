@@ -46,6 +46,12 @@ class wcsph:
         self.sim_time = 0.0
         self.sim_dt = 0.001
 
+        self.drive_start_time = 3.5
+        self.drive_during_time = 2.0
+        self.drive_end_time = self.drive_start_time + self.drive_during_time
+        self.ghost_particle_drive_speed = 0.01
+        self.ghost_particle_drive_dir = wp.vec3(0.0, 0.0, -1.0)
+
         
 
         # self.particle_radius = 0.0125
@@ -53,7 +59,9 @@ class wcsph:
         self.bound_size = 100.0
         self.bound_3d_size = wp.vec3(self.bound_size , self.bound_size * 0.5, self.bound_size)
         self.collider: wp.Mesh = None
-        self.ghost_density = 400.0
+        self.ghost_density = 1.0
+        self.ghost_wall_density = 1400.0
+        self.ghost_mass = 0.0
 
         if self.load_from_usd:
             current_dir = Path(__file__).parent
@@ -69,7 +77,7 @@ class wcsph:
         self.particle_distance = self.particle_radius * 2.0
         self.smoothing_length = self.particle_distance * 1.35
         # self.particle_distance = self.smoothing_length 
-        self.sph_model = sph_model(self.bound_size, self.smoothing_length)
+        self.sph_model = sph_model(120.0, self.smoothing_length)
 
         # fluid material
         self.sph_model.liquid_material.tension = 50.0
@@ -169,6 +177,20 @@ class wcsph:
             #         self.nei_count,
             #     ]
             # )
+        wp.launch(
+            kernel=drive_ghost_particle,
+            dim=self.n,
+            inputs=[
+                self.x,
+                self.v,
+                self.ghost_mask,
+                self.ghost_particle_drive_dir,
+                self.ghost_particle_drive_speed,
+                self.sim_time,
+                self.drive_start_time,
+                self.drive_end_time,
+            ]
+        )
         with wp.ScopedTimer("calculate density", active = self.verbose) :
 
             wp.launch(
@@ -181,6 +203,8 @@ class wcsph:
                     self.x,
                     self.ghost_mask,
                     self.rho_0,
+                    self.ghost_density,
+                    self.ghost_wall_density,
                     self.p_volume,
                     self.smoothing_length,
                     self.sph_model.grid.id,
@@ -203,10 +227,10 @@ class wcsph:
                     self.pressure,
                     self.ghost_mask,
                     self.ghost_density,
+                    self.ghost_mass,
+                    self.ghost_wall_density,
                     self.suction_start,
-                    self.suction_test,
-                    self.suction_distance,
-                    1.0e1,
+                    5.0e3,
                     self.weight_test,
                     self.p_volume,
                     self.mass,
@@ -246,56 +270,58 @@ class wcsph:
         #     dim=self.ghost_particle_n,
         #     inputs=[self.ghost_particle_x, self.ghost_particle_render_x, 0.01, wp.vec3(0.0, 0.0, 0.0)])
 
-    def preparation(self) :
-        with wp.ScopedTimer("preparation", active=True):
-                    # build grid
-            self.sph_model.grid.build(self.x, self.smoothing_length)
+    # def preparation(self) :
+    #     with wp.ScopedTimer("preparation", active=True):
+    #                 # build grid
+    #         self.sph_model.grid.build(self.x, self.smoothing_length)
 
-            wp.launch(
-                kernel=get_neighbor,
-                dim=self.n,
-                inputs=[
-                    self.sph_model.grid.id,
-                    self.x,
-                    self.smoothing_length,
-                    self.nei_count,
-                ]
-            )
+    #         wp.launch(
+    #             kernel=get_neighbor,
+    #             dim=self.n,
+    #             inputs=[
+    #                 self.sph_model.grid.id,
+    #                 self.x,
+    #                 self.smoothing_length,
+    #                 self.nei_count,
+    #             ]
+    #         )
 
-            wp.launch(
-                kernel=rho,
-                dim=self.n,
-                inputs=[
-                    self.rho,
-                    self.exponent,
-                    self.stiffness,
-                    self.x,
-                    self.rho_0,
-                    self.p_volume,
-                    self.smoothing_length,
-                    self.sph_model.grid.id,
-                    self.pressure,
-                ]
-            )
+    #         wp.launch(
+    #             kernel=rho,
+    #             dim=self.n,
+    #             inputs=[
+    #                 self.rho,
+    #                 self.exponent,
+    #                 self.stiffness,
+    #                 self.x,
+    #                 self.rho_0,
+    #                 self.ghost_mask,
+    #                 self.ghost_density,
+    #                 self.ghost_wall_density,
+    #                 self.p_volume,
+    #                 self.smoothing_length,
+    #                 self.sph_model.grid.id,
+    #                 self.pressure,
+    #             ]
+    #         )
 
-            wp.launch(
-                kernel=compute_factor,
-                dim=self.n,
-                inputs=[
-                    self.sph_model.grid.id,
-                    self.x,
-                    self.smoothing_length,
-                    self.p_volume,
-                    self.factor,
-                ]
-            )
+    #         wp.launch(
+    #             kernel=compute_factor,
+    #             dim=self.n,
+    #             inputs=[
+    #                 self.sph_model.grid.id,
+    #                 self.x,
+    #                 self.smoothing_length,
+    #                 self.p_volume,
+    #                 self.factor,
+    #             ]
+    #         )
 
     def step(self) :
         # pass
         with wp.ScopedTimer("step", active=True):
             for _ in range(self.sub_step_num):
                 with wp.ScopedTimer("sub_step", active=False):
-                    pass
                     self.sub_step()
                     # print(self.render_x)
                     self.sim_time += self.sim_dt
@@ -320,8 +346,15 @@ class wcsph:
             # 只选择 fluid particles (mask == 0)
             fluid_indices = ghost_mask_np == 0
             ghost_indices = ghost_mask_np == 1
+            ghost_wall_indices = ghost_mask_np == 2
+            force_indices = ghost_mask_np == 3
+
             fluid_particles = render_x_np[fluid_indices]
             ghost_particles = render_x_np[ghost_indices]
+            ghost_wall_particles = render_x_np[ghost_wall_indices]
+            force_particles = render_x_np[force_indices]
+
+
 
             
             self.renderer.render_points(
@@ -330,13 +363,26 @@ class wcsph:
                 name="points", 
                 colors=(0.2, 0.3, 0.7)
             )
+            self.renderer.render_points(
+                points=ghost_particles, 
+                radius=self.particle_radius * 0.0025, 
+                name="ghost_particle", 
+                colors=(0.2, 0.8, 0.4)
+            )
 
-            # self.renderer.render_points(
-            #     points=ghost_particles, 
-            #     radius=self.particle_radius * 0.01, 
-            #     name="ghost", 
-            #     colors=(0.9, 0.3, 0.7)
-            # )
+            self.renderer.render_points(
+                points=ghost_wall_particles, 
+                radius=self.particle_radius * 0.0025, 
+                name="ghost_wall", 
+                colors=(0.9, 0.3, 0.7)
+            )
+
+            self.renderer.render_points(
+                points=[self.force_p * 0.01], 
+                radius=self.particle_radius * 0.08, 
+                name="force", 
+                colors=(0.5, 0.8, 0.9)
+            )
 
             self.renderer.end_frame()
 
@@ -359,6 +405,9 @@ class wcsph:
         stage = Usd.Stage.Open(filename)
         fluid = stage.GetPrimAtPath("/Fluid/Particles")
         ghost_particle = stage.GetPrimAtPath("/Fluid/GhostParticles")
+        ghost_wall_particle = stage.GetPrimAtPath("/Fluid/GhostWallParticles")
+        force_particle = stage.GetPrimAtPath("/Fluid/a_pos")
+
         
         # 收集所有粒子位置
         all_particles = []
@@ -380,6 +429,21 @@ class wcsph:
             all_particles.append(ghost_points_np)
             # ghost particles 标记为 1
             ghost_mask_list.append(np.ones(len(ghost_points_np), dtype=np.int32))
+        if ghost_wall_particle.IsValid():
+            ghost_wall_points = UsdGeom.Points(ghost_wall_particle)
+            ghost_wall_points_np = np.array(ghost_wall_points.GetPointsAttr().Get())
+            all_particles.append(ghost_wall_points_np)
+            # ghost wall particles 标记为 2
+            ghost_mask_list.append(np.ones(len(ghost_wall_points_np), dtype=np.int32) * 2)
+
+        if force_particle.IsValid():
+            force_points = UsdGeom.Points(force_particle)
+            force_points_np = np.array(force_points.GetPointsAttr().Get())
+            self.force_p = wp.vec3(force_points_np) * 100.0
+
+            # all_particles.append(force_points_np)
+            # # force particles 标记为 3
+            # ghost_mask_list.append(np.ones(len(force_points_np), dtype=np.int32) * 3)
 
         if len(all_particles) > 0:
             combined_particles = np.vstack(all_particles)
