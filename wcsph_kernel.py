@@ -46,7 +46,6 @@ def get_cubic(r_norm : float, radius : float):
 @wp.kernel
 def drive_ghost_particle(
     x: wp.array(dtype=wp.vec3),
-    v: wp.array(dtype=wp.vec3),
     mask: wp.array(dtype=int),
     dir: wp.vec3,
     vel: float,
@@ -56,15 +55,38 @@ def drive_ghost_particle(
 ) :
     tid = wp.tid()
     current_vel = float(0.0)
-    if 2 > mask[tid] > 0 :
+    # if 2 > mask[tid] > 0 :
+    if start_time < time < end_time :
+        current_vel = vel
+    elif time > end_time + 2.0 :
+        current_vel = -vel
+    else :
+        current_vel = 0.0
+    x[tid] += current_vel * dir
+
+@wp.kernel
+def drive_collider(
+    collider_vtx: wp.array(dtype=wp.vec3),
+    collider_vel: wp.array(dtype=wp.vec3),
+    collider_mask: wp.array(dtype=int),
+    mask_id : int,
+    dir: wp.vec3,
+    vel: float,
+    time: float,
+    start_time: float,
+    end_time: float,
+) :
+    tid = wp.tid()
+    current_vel = float(0.0)
+    if collider_mask[tid] == mask_id :
         if start_time < time < end_time :
             current_vel = vel
         elif time > end_time + 2.0 :
             current_vel = -vel
         else :
             current_vel = 0.0
-        x[tid] += current_vel * dir
-        v[tid] = current_vel * dir
+        collider_vtx[tid] += current_vel * dir
+        collider_vel[tid] = current_vel * dir
 
     
 
@@ -245,9 +267,9 @@ def acceleration(
     ghost_density: float,
     ghost_mass: float,
     ghost_wall_density: float,
-    sink_start: wp.vec3,
-    suction_strength: float,
-    weight_test: wp.array(dtype=float),
+    force_points: wp.array(dtype=wp.vec3),
+    force: wp.array(dtype=wp.vec3),
+    force_weight: float,
     volume: float,
     mass_: wp.array(dtype=float),
     gamma_: wp.array(dtype=float),
@@ -255,6 +277,7 @@ def acceleration(
     gravity: float,
     smoothing_length : float,
     grid_id : wp.uint64,
+    force_grid_id: wp.uint64,
 ) :
     tid = wp.tid()
     i = wp.hash_grid_point_id(grid_id, tid)
@@ -270,12 +293,55 @@ def acceleration(
     pressure = particle_pressure[i]
     stiffness = particle_stiffness[i]
     exponent = particle_exponent[i]
-    ghost_count = float(0.0)
+    # ghost_count = float(0.0)
+    force_count = float(0.0)
 
     acc = wp.vec3(0.0, 0.0, 0.0)
     if ghost_mask[i] == 0:
 
         neighbors = wp.hash_grid_query(grid_id, x, smoothing_length)
+        max_force_range = smoothing_length * 2.0
+        force_neighbors = wp.hash_grid_query(force_grid_id, x, max_force_range)
+        
+        for force_idx in force_neighbors:
+            force_pos = force_points[force_idx]
+            force_dir = force[force_idx]
+            
+            # 计算距离
+            to_force = force_pos - x
+            distance = wp.length(to_force)
+            
+            if distance < max_force_range and distance > 1e-6:
+                force_count = force_count + 1.0
+                w = get_cubic(distance, max_force_range)
+                
+                # 距离阈值
+                distance_threshold = smoothing_length * 0.125  # 可调整
+                
+                # 计算两种方向
+                to_force_normalized = to_force / distance
+                
+                # 计算混合权重：距离越远，to_force 权重越大；距离越近，force_dir 权重越大
+                if distance > distance_threshold:
+                    # 大于阈值：主要使用 to_force_normalized
+                    # 计算混合比例（距离越远，to_force 权重越大）
+                    blend_factor = wp.min(1.0, (distance - distance_threshold) / (max_force_range - distance_threshold))
+                    direction = to_force_normalized * blend_factor + force_dir * (1.0 - blend_factor)
+                else:
+                    # 小于阈值：主要使用 force_dir
+                    # 计算混合比例（距离越近，force_dir 权重越大）
+                    blend_factor = wp.min(1.0, distance / distance_threshold)
+                    direction = force_dir * (1.0 - blend_factor) + to_force_normalized * blend_factor
+                
+                # 归一化混合后的方向
+                direction_magnitude = wp.length(direction)
+                if direction_magnitude > 1e-6:
+                    direction = direction / direction_magnitude
+                
+                # 计算吸力
+                suction_force = force_weight * w * direction
+                
+                acc += suction_force / force_count
 
         for index in neighbors :
             nei_mass = ghost_mass
@@ -288,6 +354,22 @@ def acceleration(
                 e_dist = wp.max(distance, particle_size)
                 if ghost_mask[index] == 1:
                     pass
+                    # distance = wp.length(dir_current_nei)
+                    # max_suction_range = smoothing_length * 1.5
+                    # if distance < max_suction_range and distance > 1e-6:
+                        
+                    #     # 方向：从 fluid 指向 ghost
+                    #     to_ghost = -dir_current_nei / distance
+                        
+                    #     # 使用 cubic kernel 作为权重
+                    #     w = get_cubic(distance, max_suction_range)
+                        
+                    #     # 吸力（可以除以 ghost_count 来平均，或者累积）
+                    #     suction_force = suction_strength * w * to_ghost
+                    #     acc += suction_force
+                    # continue
+
+                    # pass
                     # # =====================
                     # # 设置 ghost particle 的参数
                     # rho_nei = ghost_density
@@ -305,18 +387,18 @@ def acceleration(
                     # w = get_cubic(distance, smoothing_length * 5.0 )
                     # acc += (suction_strength * w * (-dir_current_nei / distance) * 0.5) / ghost_count
                     # continue
-                elif ghost_mask[index] == 0 :
-                    rho_nei = particle_rho_0[index]
-                    rho_0_nei = particle_rho_0[index]
-                    nei_mass = mass_[index]
-                    nei_gamma = gamma_[index]
-                    pressure_nei = particle_pressure[index]
-                elif ghost_mask[index] == 2:
-                    rho_nei = ghost_wall_density
-                    rho_0_nei = ghost_wall_density
-                    nei_mass = mass_[index]
-                    nei_gamma = gamma_[index]
-                    pressure_nei = particle_pressure[index]
+                # elif ghost_mask[index] == 0 :
+                #     rho_nei = particle_rho_0[index]
+                #     rho_0_nei = particle_rho_0[index]
+                #     nei_mass = mass_[index]
+                #     nei_gamma = gamma_[index]
+                #     pressure_nei = particle_pressure[index]
+                # elif ghost_mask[index] == 2:
+                rho_nei = ghost_wall_density
+                rho_0_nei = ghost_wall_density
+                nei_mass = mass_[index]
+                nei_gamma = gamma_[index]
+                pressure_nei = particle_pressure[index]
 
                 # non pressure acceleration
                 acc = cal_acc_with_non_pressure(
@@ -566,19 +648,55 @@ def update_collider_with_tri_mesh(
 
 
     # 查询 mesh
+    # for mesh_id in mesh_ids:
     res = wp.mesh_query_point_sign_normal(mesh_id, particle_pos, radius, sign, face_index, face_u, face_v)
     # q = wp.mesh_query_point(mesh_id, p, radius)
     if res:
         # cd[tid] = 1
 
         mesh_pos = wp.mesh_eval_position(mesh_id, face_index, face_u, face_v)
-        # mesh_normal = wp.mesh_eval_face_normal(mesh_id, face_index, )
+        mesh_normal = wp.mesh_eval_face_normal(mesh_id, face_index, )
         # mesh_vel = wp.mesh_eval_velocity(mesh_id, face_index, face_u, face_v)
 
         delta = particle_pos - mesh_pos
-        n = wp.normalize(delta) * sign
-        v_length = wp.length(particle_vel)
-        particle_vel = (particle_vel - n * v_length) * restitution
+        delta_length = wp.length(delta)
+
+        n = mesh_normal * sign
+
+        safe_distance = radius * 1.2
+        penetration = delta_length - radius
+
+        if delta_length < safe_distance:
+            particle_pos = mesh_pos + n * safe_distance
+            delta_length = safe_distance  # 更新距离
+
+        if penetration > 0.0:
+            particle_pos = mesh_pos + n * (radius + 1e-6) 
+
+        vn = wp.dot(particle_vel, n)
+        if vn < 0.0 or delta_length < safe_distance * 1.1:
+            # 法向速度：反射并应用 restitution
+            v_normal = n * vn
+            
+            # 切向速度：保持不变（用于摩擦计算）
+            v_tangent = particle_vel - v_normal
+            
+            # 反射法向速度（考虑 restitution）
+            v_normal_reflected = -v_normal * restitution
+            if delta_length < safe_distance:
+            # 计算推离速度（距离越近，推离速度越大）
+                penetration_ratio = (safe_distance - delta_length) / safe_distance
+                push_velocity = n * penetration_ratio * 0.3  # 可调整强度
+                v_normal_reflected = v_normal_reflected + push_velocity
+            
+            # 应用摩擦到切向速度
+            v_tangent_damped = v_tangent * (1.0 - friction)
+            
+            # 最终速度 = 反射的法向速度 + 阻尼后的切向速度
+            particle_vel = v_normal_reflected + v_tangent_damped
+        # n = wp.normalize(delta) * sign
+        # v_length = wp.length(particle_vel)
+        # particle_vel = (particle_vel - mesh_normal * v_length) * restitution
 
         # rel_vel = particle_vel - mesh_vel
 
