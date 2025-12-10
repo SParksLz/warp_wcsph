@@ -56,7 +56,7 @@ def drive_ghost_particle(
 ) :
     tid = wp.tid()
     current_vel = float(0.0)
-    if 3 > mask[tid] > 0 :
+    if 2 > mask[tid] > 0 :
         if start_time < time < end_time :
             current_vel = vel
         elif time > end_time + 2.0 :
@@ -126,6 +126,8 @@ def rho(
     mask = ghost_mask[i]
     rho_0 = rest_density[i]
 
+    density_ratio = float(0.0)
+
     if mask == 0:
         rho_temp = float(0.0)
         neighbors = wp.hash_grid_query(grid_id, x, smoothing_length)
@@ -148,7 +150,9 @@ def rho(
         pressure[i] = stiff * (wp.pow(particle_rho[i] / rho_0, exp) - 1.0)
     elif mask == 1:
         particle_rho[i] = ghost_density
-        pressure[i] = 0.0
+        density_ratio = ghost_density / rho_0
+        # pressure[i] = -stiffness[i] * (1.0 - density_ratio)
+        pressure[i] = -100.0 * (1.0 - density_ratio)
     elif mask == 2:
         particle_rho[i] = ghost_wall_density
         pressure[i] = 0.0
@@ -271,7 +275,7 @@ def acceleration(
     acc = wp.vec3(0.0, 0.0, 0.0)
     if ghost_mask[i] == 0:
 
-        neighbors = wp.hash_grid_query(grid_id, x, smoothing_length * 5.0)
+        neighbors = wp.hash_grid_query(grid_id, x, smoothing_length)
 
         for index in neighbors :
             nei_mass = ghost_mass
@@ -283,18 +287,31 @@ def acceleration(
                 distance = wp.length(dir_current_nei)
                 e_dist = wp.max(distance, particle_size)
                 if ghost_mask[index] == 1:
-                    ghost_count += 1.0
-                    w = get_cubic(distance, smoothing_length * 5.0 )
-                    acc += (suction_strength * w * (-dir_current_nei / distance) * 0.5) / ghost_count
-                    # acc += particle_v[index]
-                    continue
-                if ghost_mask[index] == 2:
-                    rho_nei = ghost_density
-                    rho_0_nei = ghost_density
-                    # nei_mass = mass_[index]
+                    pass
+                    # # =====================
+                    # # 设置 ghost particle 的参数
+                    # rho_nei = ghost_density
+                    # rho_0_nei = ghost_density
+                    # nei_mass = ghost_mass
+                    # nei_gamma = gamma_[index]
+                    # pressure_nei = particle_pressure[index]
+                    # # ====================
+                    
+                    # 计算负压力：基于密度差
+                    # density_ratio = ghost_density / rho_0
+                    # 负压力，产生吸引效果
+                    # pressure_nei = -stiffness * (1.0 - density_ratio)
+                    # ghost_count += 1.0
+                    # w = get_cubic(distance, smoothing_length * 5.0 )
+                    # acc += (suction_strength * w * (-dir_current_nei / distance) * 0.5) / ghost_count
+                    # continue
+                elif ghost_mask[index] == 0 :
+                    rho_nei = particle_rho_0[index]
+                    rho_0_nei = particle_rho_0[index]
+                    nei_mass = mass_[index]
                     nei_gamma = gamma_[index]
-                    pressure_nei = 0.0
-                else :
+                    pressure_nei = particle_pressure[index]
+                elif ghost_mask[index] == 2:
                     rho_nei = ghost_wall_density
                     rho_0_nei = ghost_wall_density
                     nei_mass = mass_[index]

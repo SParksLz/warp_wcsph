@@ -44,13 +44,17 @@ class wcsph:
         self.verbose = False
         self.load_from_usd = load_from_usd
         self.sim_time = 0.0
-        self.sim_dt = 0.001
+        self.sim_dt = 0.0001
 
-        self.drive_start_time = 3.5
-        self.drive_during_time = 2.0
+
+        self.drive_start_time = 0.5
+        self.drive_during_time = 1.0
         self.drive_end_time = self.drive_start_time + self.drive_during_time
-        self.ghost_particle_drive_speed = 0.01
+        self.ghost_particle_drive_speed = 0.00333
         self.ghost_particle_drive_dir = wp.vec3(0.0, 0.0, -1.0)
+
+        self.dropper_mesh: wp.Mesh = None
+        self.container_mesh: wp.Mesh = None
 
         
 
@@ -60,13 +64,13 @@ class wcsph:
         self.bound_3d_size = wp.vec3(self.bound_size , self.bound_size * 0.5, self.bound_size)
         self.collider: wp.Mesh = None
         self.ghost_density = 1.0
-        self.ghost_wall_density = 1400.0
+        self.ghost_wall_density = 1000.0
         self.ghost_mass = 0.0
 
         if self.load_from_usd:
             current_dir = Path(__file__).parent
             # self.load_particles_from_usd("./temp/particle_test.usd", wp.vec3(0.0, 0.0, 0.0))
-            self.load_particles_from_usd((current_dir / "temp" / "fluid_particles.usd").as_posix(), wp.vec3(0.0, 0.0, 0.0))
+            self.load_particles_from_usd((current_dir / "temp" / "fluid_suction_scene.usd").as_posix(), wp.vec3(0.0, 0.0, 0.0))
         else:
             self.n = int(
                 self.bound_size * self.bound_size * self.bound_size / (self.smoothing_length**3)
@@ -75,20 +79,20 @@ class wcsph:
 
 
         self.particle_distance = self.particle_radius * 2.0
-        self.smoothing_length = self.particle_distance * 1.35
+        self.smoothing_length = self.particle_distance * 1.15
         # self.particle_distance = self.smoothing_length 
         self.sph_model = sph_model(120.0, self.smoothing_length)
 
         # fluid material
-        self.sph_model.liquid_material.tension = 50.0
+        self.sph_model.liquid_material.tension = 0.11
         self.sph_model.liquid_material.stiffness = 50000.0
-        self.sph_model.liquid_material.mu = 1.5
+        self.sph_model.liquid_material.mu = 0.51
 
         self.p_volume = 0.8 * (self.particle_distance ** 3)
-        self.sub_step_num = 10
+        self.sub_step_num = 5
         self.gravity = -10.0
 
-        self.camera_pos = (-4.5, 1.0, 0.0)
+        self.camera_pos = (-0.75, 0.05, 0.0)
         # self.camera_pos = (0.0, 0.0, 0.175)
 
         self.suction_start = wp.vec3(0.0, 0.0, 0.22)
@@ -121,6 +125,7 @@ class wcsph:
 
         self.render_x = wp.empty(self.n, dtype=wp.vec3)
         self.sph_model.build_hash_grid()
+
 
         self.renderer = wp.render.OpenGLRenderer(
             up_axis="Z",
@@ -230,7 +235,7 @@ class wcsph:
                     self.ghost_mass,
                     self.ghost_wall_density,
                     self.suction_start,
-                    5.0e3,
+                    1.0,
                     self.weight_test,
                     self.p_volume,
                     self.mass,
@@ -251,16 +256,16 @@ class wcsph:
         wp.launch(kernel=drift, dim=self.n, inputs=[self.x, self.v, self.sim_dt])
         # # ground collision
         wp.launch(kernel=apply_bounds, dim=self.n, inputs=[self.x, self.v ,self.bound_3d_size ,-0.1])
-        # wp.launch(
-        #     kernel=update_collider_with_tri_mesh, 
-        #     dim=self.n, 
-        #     inputs=[
-        #         self.x, 
-        #         self.v, 
-        #         self.collider.id, 
-        #         self.particle_radius, 
-        #         0.9, 0.1],
-        # )
+        wp.launch(
+            kernel=update_collider_with_tri_mesh, 
+            dim=self.n, 
+            inputs=[
+                self.x, 
+                self.v, 
+                self.collider.id, 
+                self.particle_radius, 
+                0.9, 0.1],
+        )
         wp.launch(
             kernel=to_real_world,
             dim=self.n,
@@ -321,6 +326,7 @@ class wcsph:
         # pass
         with wp.ScopedTimer("step", active=True):
             for _ in range(self.sub_step_num):
+                # pass
                 with wp.ScopedTimer("sub_step", active=False):
                     self.sub_step()
                     # print(self.render_x)
@@ -363,11 +369,17 @@ class wcsph:
                 name="points", 
                 colors=(0.2, 0.3, 0.7)
             )
+            # self.renderer.render_mesh(
+            #     points = self.dropper_mesh.points.numpy(),
+            #     indices = self.dropper_mesh.indices.numpy(),
+            #     name = "dropper",
+            #     colors = (0.75, 0.3, 0.7)
+            # )
             self.renderer.render_points(
                 points=ghost_particles, 
                 radius=self.particle_radius * 0.0025, 
                 name="ghost_particle", 
-                colors=(0.2, 0.8, 0.4)
+                colors=(0.7, 0.7, 0.7)
             )
 
             self.renderer.render_points(
@@ -377,12 +389,12 @@ class wcsph:
                 colors=(0.9, 0.3, 0.7)
             )
 
-            self.renderer.render_points(
-                points=[self.force_p * 0.01], 
-                radius=self.particle_radius * 0.08, 
-                name="force", 
-                colors=(0.5, 0.8, 0.9)
-            )
+            # self.renderer.render_points(
+            #     points=[self.force_p * 0.01], 
+            #     radius=self.particle_radius * 0.08, 
+            #     name="force", 
+            #     colors=(0.5, 0.8, 0.9)
+            # )
 
             self.renderer.end_frame()
 
@@ -403,10 +415,12 @@ class wcsph:
         print(f"粒子数据已保存到 {filename}，共 {self.n} 个粒子")
     def load_particles_from_usd(self, filename, offset: wp.vec3):
         stage = Usd.Stage.Open(filename)
-        fluid = stage.GetPrimAtPath("/Fluid/Particles")
-        ghost_particle = stage.GetPrimAtPath("/Fluid/GhostParticles")
-        ghost_wall_particle = stage.GetPrimAtPath("/Fluid/GhostWallParticles")
-        force_particle = stage.GetPrimAtPath("/Fluid/a_pos")
+        fluid = stage.GetPrimAtPath("/Fluid/FluidParticles")
+        dropper = stage.GetPrimAtPath("/Fluid/Dropper")
+        container = stage.GetPrimAtPath("/Fluid/Container")
+        ghost_particle = stage.GetPrimAtPath("/Fluid/Dropper_Ghost_Particles")
+        ghost_wall_particle = stage.GetPrimAtPath("/Fluid/Container/Ghost_Wall_Particles")
+        # force_particle = stage.GetPrimAtPath("/Fluid/a_pos")
 
         
         # 收集所有粒子位置
@@ -436,14 +450,14 @@ class wcsph:
             # ghost wall particles 标记为 2
             ghost_mask_list.append(np.ones(len(ghost_wall_points_np), dtype=np.int32) * 2)
 
-        if force_particle.IsValid():
-            force_points = UsdGeom.Points(force_particle)
-            force_points_np = np.array(force_points.GetPointsAttr().Get())
-            self.force_p = wp.vec3(force_points_np) * 100.0
+        # if force_particle.IsValid():
+        #     force_points = UsdGeom.Points(force_particle)
+        #     force_points_np = np.array(force_points.GetPointsAttr().Get())
+        #     self.force_p = wp.vec3(force_points_np) * 100.0
 
-            # all_particles.append(force_points_np)
-            # # force particles 标记为 3
-            # ghost_mask_list.append(np.ones(len(force_points_np), dtype=np.int32) * 3)
+        #     # all_particles.append(force_points_np)
+        #     # # force particles 标记为 3
+        #     # ghost_mask_list.append(np.ones(len(force_points_np), dtype=np.int32) * 3)
 
         if len(all_particles) > 0:
             combined_particles = np.vstack(all_particles)
@@ -484,7 +498,7 @@ class wcsph:
         #         dim=self.ghost_particle_n, 
         #         inputs=[self.ghost_particle_x, 100.0, offset])
         #     print(f"粒子数据已加载到 ghost_particles，共 {self.ghost_particle_n} 个粒子")
-        container = stage.GetPrimAtPath("/ParticleTest/Container")
+        # container = stage.GetPrimAtPath("/ParticleTest/Container")
         if container.IsValid() :
             mesh = UsdGeom.Mesh(container)
             np_vtx = np.array(mesh.GetPointsAttr().Get())
@@ -497,6 +511,19 @@ class wcsph:
 
             self.collider = wp.Mesh(vtx, idx)
             print(self.collider.points)
+
+        if dropper.IsValid() :
+            mesh = UsdGeom.Mesh(dropper)
+            np_vtx = np.array(mesh.GetPointsAttr().Get())
+            vtx = wp.array(np_vtx, dtype=wp.vec3)
+            # wp.launch(
+            #     kernel=to_micro_world, 
+            #     dim=len(np_vtx), 
+            #     inputs=[vtx, 100.0, offset])
+            idx = wp.array(np.array(mesh.GetFaceVertexIndicesAttr().Get()))
+
+            self.dropper_mesh = wp.Mesh(vtx, idx)
+            # print(self.collider.points)
             
 
 
